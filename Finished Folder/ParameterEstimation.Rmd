@@ -1,0 +1,60 @@
+---
+title: "Parameter Estimation"
+output: html_document
+date: "2023-11-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Need to run Functions.rmd
+
+## Read In Drives cleaned from DriveCleaningLoop.Rmd
+Separation Warnings due to error in simulator, resulting in a value of 0 for the whole drive, expect for a handful of nonzero values. These outliers result in a operation warning. 
+```{r}
+drive1 = read.csv("/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Raw Drive/Cleaned_Drive1.csv")
+drive2 = read.csv("/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Raw Drive/Cleaned_Drive2.csv")
+drive3 = read.csv("/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Raw Drive/Cleaned_Drive3.csv")
+drive4 = read.csv("/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Raw Drive/Cleaned_Drive4.csv")
+drive1R = read.csv("/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Raw Drive/Cleaned_Drive1R.csv")
+drive4R = read.csv("/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Raw Drive/Cleaned_Drive4R.csv")
+```
+
+## Obtain Parameter Estimates using Lv and Orignal AR model. 
+```{r}
+Para1LV = paraEstAll_NADS(drive1,6, include.lv = TRUE) %>% select(!c("max", "min", "sdlp", "mean.lp"))
+Para1 = paraEstAll_NADS(drive1, 6)%>% select(!c("max", "min", "sdlp", "mean.lp"))
+Para2 = paraEstAll_NADS(drive2, 6)%>% select(!c("max", "min", "sdlp", "mean.lp"))
+Para2LV = paraEstAll_NADS(drive2, 6, include.lv = TRUE)%>% select(!c("max", "min", "sdlp", "mean.lp"))
+
+Para3 = paraEstAll_NADS(drive3, 6)%>% select(!c("max", "min", "sdlp", "mean.lp"))
+Para3LV = paraEstAll_NADS(drive3, 6, include.lv = TRUE)%>% select(!c("max", "min", "sdlp", "mean.lp"))
+
+Para4 = paraEstAll_NADS(drive4, 6)%>% select(!c("max", "min", "sdlp", "mean.lp"))
+Para4LV = paraEstAll_NADS(drive4, 6, include.lv = TRUE)%>% select(!c("max", "min", "sdlp", "mean.lp"))
+
+Para1R = paraEstAll_NADS(drive1R, 6)%>% select(!c("max", "min", "sdlp", "mean.lp"))
+Para1RLV = paraEstAll_NADS(drive1R, 6, include.lv = TRUE)%>% select(!c("max", "min", "sdlp", "mean.lp"))
+
+Para4R = paraEstAll_NADS(drive4R, 6)%>% select(!c("max", "min", "sdlp", "mean.lp"))
+Para4RLV = paraEstAll_NADS(drive4R, 6, include.lv = TRUE)%>% select(!c("max", "min", "sdlp", "mean.lp"))
+```
+
+## Write Parameter Estiamtes
+```{r}
+#write.csv(ParaTotalLV,"/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Parameter Estimates/DriveParamtersLV.csv")
+write.csv(Para1LV, "/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Parameter Estimates/Drive1LV.csv")
+write.csv(Para2LV, "/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Parameter Estimates/Drive2LV.csv")
+write.csv(Para3LV, "/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Parameter Estimates/Drive3LV.csv")
+write.csv(Para4LV, "/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Parameter Estimates/Drive4LV.csv")
+write.csv(Para1RLV, "/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Parameter Estimates/Drive1RLV.csv")
+write.csv(Para4RLV, "/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Parameter Estimates/Drive4RLV.csv")
+#write.csv(ParaTotal,"/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Parameter Estimates/DriveParamters.csv")
+write.csv(Para1, "/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Parameter Estimates/Drive1.csv")
+write.csv(Para2, "/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Parameter Estimates/Drive2.csv")
+write.csv(Para3, "/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Parameter Estimates/Drive3.csv")
+write.csv(Para4, "/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Parameter Estimates/Drive4.csv")
+write.csv(Para1R, "/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Parameter Estimates/Drive1R.csv")
+write.csv(Para4R, "/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Data/Parameter Estimates/Drive4R.csv")
+```

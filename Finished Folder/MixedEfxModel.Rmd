@@ -1,0 +1,114 @@
+---
+title: "MixedModel"
+output: html_document
+date: "2023-11-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(lme4)
+library(tidyverse)
+library(emmeans)
+library(splines)
+```
+
+```{r}
+ParaTotalRel <- read.csv("/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Programs/Finished Folder/Parameter Estimates/ParaTotalRel.csv")
+ParaTotalRelLV <- read.csv("/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Programs/Finished Folder/Parameter Estimates/ParaTotalRelLV.csv")
+ParaTotal <- read.csv("/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Programs/Finished Folder/Parameter Estimates/ParaTotal.csv")
+ParaTotalRel <- read.csv("/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Programs/Finished Folder/Parameter Estimates/ParaTotalRel.csv")
+```
+
+## Null Model
+```{r}
+
+m_Null <- lmer(Lambda1 ~  (1|Subject), data = ParaTotalRel)
+summary(m_Null)
+m_Drive <- lmer(Lambda1 ~  (1|Subject)+(Drive), data = ParaTotalRel)
+summary(m_Drive)
+anova(m_Null, m_Drive)
+m_Drive_bs <- lmer(Lambda1 ~  (1|Subject)+bs(Drive), data = ParaTotalRel)
+summary(m_Drive_bs)
+anova(m_Null, m_Drive_bs)
+
+m_Event <- lmer(Lambda1 ~  (1|Subject)+(Event), data = ParaTotalRel)
+summary(m_Event)
+anova(m_Null, m_Event)
+summary(m_Drive)
+
+.m_Null_LV <- lmer(Lambda1 ~(1|Subject), data = ParaTotalRelLV)
+summary(m_Null_LV)  
+ggplot()+
+  geom_point(data = ParaTotalRel, aes(x = as.factor(Subject), y = Lambda1), color = "red", alpha = .5)+
+  geom_point(data = ParaTotalRelLV, aes(x = as.factor(Subject), y = Lambda1), color = "blue", alpha = .5, ylim = c(-2,2))
+
+PlotOg <- ParaTotal
+PlotLV <- ParaTotalLV
+PlotOg$Type <- "OSD"
+PlotLV$Type <- "LV"
+PlotOg <- PlotOg %>% select(!X)
+PlotDF <- rbind(PlotLV, PlotOg)
+PlotDF <- PlotDF %>% filter(lambda1< 2 & lambda1>0)
+
+ggplot(PlotDF)+
+  geom_text(aes(x = as.factor(Subject), y = lambda1, color = Type, label = as.factor(Drive)), alpha = .7, 
+                nudge_x =  ifelse(PlotDF$Type == "LV", -.2, .2) )+
+  facet_grid(Event~.)+
+  labs(title = "LV Model vs O'Shea Dawson Model", y = "Subject")+
+  scale_color_manual(values = c("red", "blue"))
+ggsave("/Users/markkrysan/Library/CloudStorage/OneDrive-GrinnellCollege/MAP_SUM23/MarkFall/Programs//LVvsOSD.png", width = 12, height = 6 )
+
+mean(filter(ParaTotalRel, Drive == 4)$Lambda1)
+```
+
+```{r}
+ParaTotalRel <- ParaTotalRel %>% mutate(vas_like_effects_ctd = (vas_like_effects - mean(vas_like_effects))/sd(vas_like_effects))
+ParaTotalRel <- ParaTotalRel %>% mutate(vas_like_effects_lol = vas_like_effects+5)
+ParaTotalRel <- ParaTotalRel %>% mutate(Change.Delta.9.ctd= Change.Delta.9- mean(Change.Delta.9))
+ParaTotalRel <- ParaTotalRel %>% mutate(vas_high_ctd = (vas_high - mean(vas_high))/sd(vas_high))
+
+ParaTotalRelLV <- ParaTotalRelLV %>% mutate(vas_like_effects_ctd = (vas_like_effects - mean(vas_like_effects))/sd(vas_like_effects))
+ParaTotalRelLV <- ParaTotalRelLV %>% mutate(vas_like_effects_lol = vas_like_effects+5)
+ParaTotalRelLV <- ParaTotalRelLV %>% mutate(Change.Delta.9.ctd= Change.Delta.9- mean(Change.Delta.9))
+ParaTotalRelLV <- ParaTotalRelLV %>% mutate(vas_high_ctd = (vas_high - mean(vas_high))/sd(vas_high))
+```
+
+
+
+
+```{r}
+
+
+
+m_Ready = lmer(Lambda1 ~  (1|Subject) + Ready, data = ParaTotalRel)
+summary(m_Ready)
+m_Ready_LV = lmer(Lambda1 ~  (1|Subject) + Ready, data = ParaTotalRelLV)
+summary(m_Ready_LV)
+
+m_Good= lmer(Lambda1 ~ (1|Subject)+ Change.Delta.9.ctd*vas_like_effects_ctd+Ready, data = ParaTotalRel, REML = TRUE)
+m_Good_LV = lmer(Lambda1 ~ (1|Subject)+ Change.Delta.9.ctd*vas_like_effects_ctd+Ready, data = ParaTotalRelLV, REML = TRUE)
+summary(m_Good)
+summary(m_Good_LV)
+anova(m_Good, m_Ready, m_Null)
+
+confint(m_Null)
+confint(m_Null_LV)
+confint(m_Ready)
+confint(m_Ready_LV)
+confint(m_Good)
+confint(m_Good_LV)
+confint(m_Null)
+```
+
+```{r}
+emmeans(m_Good, specs = "Ready")
+emmeans(m_Ready_LV, specs = "Ready")
+emmeans(m_Ready, specs = "Ready", by = "Ready")
+```
+```{r}
+citation(package = "emmeans")
+```
+

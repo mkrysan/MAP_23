@@ -1,0 +1,906 @@
+---
+title: "Functions"
+output: pdf_document
+date: "2023-11-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+#install.packages("ggpubr")
+library(ggpubr)
+library(data.table)
+library(car)
+#install.packages("gt")
+#install.packages("logistf")
+library(logistf)
+#install.packages("visreg")
+#install.packages("Metrics")
+library(pscl)
+library(cluster)
+library(Metrics)
+library(resample)
+library(mvtnorm)
+#install.packages("GGally")
+library(GGally)
+library(spatstat.geom)
+library(gt)
+library(glarma)
+```
+
+# Estimate Functions
+
+## HZ Avg
+A simple averaging function to bring the frames per second down to a specified number.
+```{r}
+hzAvg = function(TimeSeries, hz){
+  divide = 60/hz
+  tsLength = nrow(TimeSeries)
+  groupNum = ceiling(tsLength/divide)
+  Group = rep(1:groupNum, each = divide, length.out = tsLength)
+  TimeSeries = cbind(TimeSeries, Group)
+  TimeSeries = TimeSeries %>% group_by(Group) %>% mutate(mean.lp = mean(lp))
+  TimeSeries = TimeSeries[!duplicated(TimeSeries$Group), ]
+  TimeSeries = TimeSeries %>% dplyr::select(-c("lp"))
+  TimeSeries = TimeSeries %>% rename(lp = mean.lp, Count = Group) %>% ungroup()
+}
+```
+
+
+## Parameter Estimator For Single Drive
+Estimates all parameters of a Time series based on the O'Shea and Dawson Model. Steps in the model correspond to the paper.
+Include.lv includes the lateral velocity in the parameter estimation, include.ConfInt includes the confidiene intervals for the coefficients. 
+```{r}
+
+paraEstimator1 = function(TimeSeries, hz, frames, include.lv=FALSE, include.ConfInt= FALSE){
+  if(hz != 0){
+    TimeSeries = hzAvg(TimeSeries, hz)
+  }
+  
+  #Step 2
+  TimeSeries = TimeSeries %>% mutate(lp.lag.1 = lag(lp, n=1), lp.lag.2 = lag(lp, n=2), lp.lag.3 = lag(lp,n=3))
+  if("lv" %in% colnames(TimeSeries) == FALSE){
+    TimeSeries = TimeSeries %>% mutate(lv = (lp-lp.lag.1)*frames)
+  }
+  
+  #Step 2a
+  TimeSeries = TimeSeries[-c(1,2,3),]
+  
+  y.star = TimeSeries$lp
+  y.minus.1 = TimeSeries$lp.lag.1
+  y.minus.2 = TimeSeries$lp.lag.2
+  y.minus.3 = TimeSeries$lp.lag.3
+  #Step 3
+  W.1 = c()
+  W.2 = c()
+  W.3 = c()
+  for(i in 1:(length(TimeSeries$lp)+3)){
+    W.1 = c(W.1, y.minus.1[i])
+    W.2 = c(W.2, y.minus.1[i] + (y.minus.1[i] - y.minus.3[i])/2)
+    W.3 = c(W.3, 3*y.minus.1[i] - 3*y.minus.2[i] + y.minus.3[i])
+  }
+  #Removing last three values, since they are NA
+  W.1 = W.1[!is.na(W.1)]
+  W.2 = W.2[!is.na(W.2)]
+  W.3 = W.3[!is.na(W.3)]
+  #Step 4b
+  modelData = data.frame(y.star, W.1, W.2, W.3)
+  lm = lm(y.star~0+W.1+W.2+W.3, data = modelData)
+  beta2 = as.vector(lm$coefficients)[2]
+  beta3 = as.vector(lm$coefficients)[3]
+  #Constraining beta2 and beta3 as defined in Fig. 3
+  if(beta2 <0 & beta3 <0){
+    beta2 = 0
+    beta3 = 0
+  } else if(beta2< 0 & 0 < beta3& beta3 < 1){
+    beta2 = 0
+  } else if(0<beta2 &beta2 <1 & beta3 <0){
+    beta3 = 0
+  } else if(beta2 < (beta3-1) & beta3>1){
+    beta3 = 1
+    beta2 = 0
+  } else if(beta2 >1 & beta2>(beta3 +1)){
+    beta3 =0
+    beta2 = 1
+  } else if( beta2>0 & beta3>0 & beta2+beta3>1){
+    beta2 = beta2 -( .5*(beta2+beta3-1))
+    beta3 = beta3 - (.5*(beta2+beta3 -1))
+  }
+  beta1 = 1-beta2-beta3
+  #Step 5: Calculaing Residual and sigma.hat.squared
+  y.hat = beta1*W.1 + beta2*W.2 + beta3*W.3
+  resid = y.star-y.hat
+  sigma = sqrt(sum(resid^2)/(length(y.star)))
+  #Step 7: Calculate Indicator Variable 
+  indicator = ifelse(resid <0, 1,0)
+  #Step 8: Estimating probability related to indicator Variable
+  lv.minus.1 = lag(TimeSeries$lv, 1)
+  if(include.lv == TRUE){
+    logModelData = data.frame(y.minus.1[-1], indicator[-1], lv.minus.1[-1])
+    logm = logistf(indicator ~y.minus.1+lv.minus.1, data = logModelData)
+    lambda0 = as.vector(logm$coefficients)[1]
+    lambda1 = as.vector(logm$coefficients)[2]
+    #lambda2 = as.vector(logm$coefficients)[3]
+    if(include.ConfInt==TRUE){
+      results = data.frame( beta1,beta2,beta3, lambda0,lambda1, sigma)
+      confInt = data.frame(beta1.2 = confint(lm, "W.1")[1],beta1.97 = confint(lm, "W.1")[2] ,beta2.2 = confint(lm, "W.2")[1],
+                           beta2.97 = confint(lm, "W.2")[2],beta3.2 = confint(lm, "W.3")[1],beta3.97 = confint(lm, "W.3")[2],
+                             lambda0.2 = as.vector(confint(logm)[1,1]),lambda0.97 = as.vector(confint(logm)[1,2]),
+                           lambda1.2 = as.vector(confint(logm)[2,1]),lambda1.97 = as.vector(confint(logm)[2,2]))
+      results = data.frame(results, confInt, row.names = NULL)[1,]
+    }else{
+      results = data.frame( beta1,beta2,beta3, lambda0,lambda1,#lambda2, sigma)
+                            sigma)
+    }
+  }
+  else{
+    logModelData = data.frame(y.minus.1, indicator, lv.minus.1)
+    logm = logistf(indicator ~y.minus.1,data = logModelData)
+    lambda0 = as.vector(logm$coefficients)[1]
+    lambda1 = as.vector(logm$coefficients)[2]
+    if(include.ConfInt==TRUE){
+      results = data.frame( beta1,beta2,beta3, lambda0,lambda1, sigma)
+      confInt = data.frame(beta1.2 = confint(lm, "W.1")[1],beta1.97 = confint(lm, "W.1")[2] ,beta2.2 = confint(lm, "W.2")[1],
+                           beta2.97 = confint(lm, "W.2")[2],beta3.2 = confint(lm, "W.3")[1],beta3.97 = confint(lm, "W.3")[2],
+                           ambda0.2 = as.vector(confint(logm)[1,1]),lambda0.97 = as.vector(confint(logm)[1,2]),
+                           lambda1.2 = as.vector(confint(logm)[2,1]),lambda1.97 = as.vector(confint(logm)[2,2]))
+      results = data.frame(results, confInt, row.names = NULL)[1,]
+    }else{
+      results = data.frame( beta1,beta2,beta3, lambda0,lambda1,sigma)
+    }
+  }
+  results
+}
+```
+
+## Parameter Estimation for whole data frame (Optomized for Colorado Data)
+Include LV uses the LV model, info includes descriptive statisitcs. 
+```{r}
+paraEstAll_Colorado = function(DataSet, hz, include.lv = FALSE, info = TRUE){
+  DataSet = SteerLong
+  subjects = unique(DataSet$Subject)
+  subjects = subjects[!is.na(subjects)]
+  
+  final_df = NULL
+  
+  for(i in 1:length(subjects)){
+    #Step 1: Obtain Driving TS
+    TimeSeries = DataSet %>% 
+      filter(Subject == subjects[i]) %>%
+      filter(Task == 1)
+    if(info == TRUE){
+    Subject = unique(TimeSeries$Subject)
+    Group = substr(Subject, 1,1)
+    DAQ = unique(TimeSeries$DAQ)
+    Timing = unique(TimeSeries$Timing)
+    Task = unique(TimeSeries$Task)
+    
+    
+    TimeSeries = TimeSeries %>% select(DAQ, Subject, Task, Timing, Count, lp,lv)
+    }
+      TimeSeries = hzAvg(TimeSeries, hz)
+    
+    #Step 2
+    TimeSeries = TimeSeries %>% dplyr::mutate(lp.lag.1 = lag(lp, n=1), lp.lag.2 = lag(lp, n=2), lp.lag.3 = lag(lp,n=3), lv.lag.1 = lag(lv,1))
+    
+    #Step 2a
+    TimeSeries = TimeSeries[-c(1,2,3),]
+    
+    y.star = TimeSeries$lp
+    y.minus.1 = TimeSeries$lp.lag.1
+    y.minus.2 = TimeSeries$lp.lag.2
+    y.minus.3 = TimeSeries$lp.lag.3
+    #Step 3
+    W.1 = c()
+    W.2 = c()
+    W.3 = c()
+    for(i in 1:(length(TimeSeries$lp)+3)){
+      W.1 = c(W.1, y.minus.1[i])
+      W.2 = c(W.2, y.minus.1[i] + (y.minus.1[i] - y.minus.3[i])/2)
+      W.3 = c(W.3, 3*y.minus.1[i] - 3*y.minus.2[i] + y.minus.3[i])
+    }
+    #Removing last three values, since they are NA
+    W.1 = W.1[!is.na(W.1)]
+    W.2 = W.2[!is.na(W.2)]
+    W.3 = W.3[!is.na(W.3)]
+    #Step 4b
+    modelData = data.frame(y.star, W.1, W.2, W.3)
+    lm = lm(y.star~0+W.1+W.2+W.3, data = modelData)
+    beta2 = as.vector(lm$coefficients)[2]
+    beta3 = as.vector(lm$coefficients)[3]
+    #Constraining beta2 and beta3 as defined in Fig. 3
+    if(beta2 <0 & beta3 <0){
+      beta2 = 0
+      beta3 = 0
+    } else if(beta2< 0 & 0 < beta3& beta3 < 1){
+      beta2 = 0
+    } else if(0<beta2 &beta2 <1 & beta3 <0){
+      beta3 = 0
+    } else if(beta2 < (beta3-1) & beta3>1){
+      beta3 = 1
+      beta2 = 0
+    } else if(beta2 >1 & beta2>(beta3 +1)){
+      beta3 =0
+      beta2 = 1
+    } else if( beta2>0 & beta3>0 & beta2+beta3>1){
+      beta2 = beta2 -( .5*(beta2+beta3-1))
+      beta3 = beta3 - (.5*(beta2+beta3 -1))
+    }
+    beta1 = 1-beta2-beta3
+    #Step 5: Calculaing Residual and sigma.hat.squared
+    y.hat = beta1*W.1 + beta2*W.2 + beta3*W.3
+    resid = y.star-y.hat
+    autoCorrResid= durbinWatsonTest(resid)
+    sigma = sqrt(sum(resid^2)/(length(y.star)))
+    #Step 7: Calculate Indicator Variable 
+    indicator = ifelse(resid <0, 1,0)
+    autoCorrInd = durbinWatsonTest(indicator)
+    #Step 8: Estimating probability related to indicator Variable
+    lv.minus.1 = lag(TimeSeries$lv,1)
+    if(include.lv == TRUE){
+      logModelData = data.frame(y.minus.1, indicator, lv.minus.1)
+      logm = logistf(indicator ~y.minus.1+lv.minus.1, data = logModelData )
+      lambda0 = as.vector(logm$coefficients)[1]
+      lambda1 = as.vector(logm$coefficients)[2]
+      lambda2 = as.vector(logm$coefficients)[3]
+      results = data.frame(DAQ, Group, Subject, Timing, Task, beta1,beta2,beta3, lambda0,lambda1,lambda2, sigma,  max = max(y.star), min = min(y.star), 
+                           sdlp = sd(y.star), mean.lp = mean(y.star), mean.lv = mean(TimeSeries$lv))
+    }else{
+      logModelData = data.frame(y.minus.1, indicator, lv.minus.1)
+      logm = logistf(indicator ~y.minus.1,data = logModelData)
+      lambda0 = as.vector(logm$coefficients)[1]
+      lambda1 = as.vector(logm$coefficients)[2]
+      results = data.frame(DAQ, Group, Subject, Timing, Task, beta1,beta2,beta3, lambda0,lambda1, sigma,  max = max(y.star), min = min(y.star), 
+                           sdlp = sd(y.star), mean.lp = mean(y.star), mean.lv = mean(TimeSeries$lv))
+    }
+    final_df = rbind(final_df, results)
+  }
+  #names = c("DAQ", "Subject", "Timing", "Task", "Beta1", "Beta2", "Beta3", "Lambda0", "Lambda1", "Sigma", "autoCorr")
+  #final_df = as.data.frame(final_df)
+  #final_df = setnames(final_df, old = c("V1", "V2", "V3","V4","V5","V6","V7","V8","V9","V10", "V11"), new =  names)
+  final_df
+}
+```
+
+## Parameter Estimation for whole data frame (Optomized For NADS Data)
+```{r}
+paraEstAll_NADS = function(DataSet, hz, include.lv = FALSE, info = TRUE){
+  subjects = unique(DataSet$Subject)
+  events = c("Dark", "Gravel", "RuralStr")
+  
+  final_df = NULL
+  for(j in 1:3){
+    
+    for(i in 1:length(subjects)){
+      #Step 1: Obtain Driving TS
+      TimeSeries = DataSet %>% 
+        filter(Subject == subjects[i]) %>%
+        filter(EventName == events[j])
+      if(TimeSeries %>% summarise(n = n())==0){
+        next
+      }
+      
+      Subject = as.integer(unique(TimeSeries$Subject))
+      DAQName = unique(TimeSeries$DaqName)
+      Condition = as.integer(unique(TimeSeries$Condition))
+      Event = unique(TimeSeries$EventName)
+      Drive = as.integer(unique(TimeSeries$Drive))
+      Restart = as.integer(unique(TimeSeries$Restart))
+      
+      TimeSeries = TimeSeries %>% select(Subject, DaqName, Condition, EventName, Drive, Restart,lp)
+      TimeSeries = hzAvg(TimeSeries, hz)
+      
+      #Step 2
+      
+      TimeSeries = TimeSeries %>% dplyr::mutate(lp.lag.1 = lag(lp, n=1), lp.lag.2 = lag(lp, n=2), lp.lag.3 = lag(lp,n=3) )
+      TimeSeries = TimeSeries %>% mutate(lv = (lp-lp.lag.1)*(60/hz))
+      TimeSeries = TimeSeries %>% mutate(lv.minus.1 = lag(lv, n=1))
+      #Step 2a
+      TimeSeries = TimeSeries[-c(1,2,3),]
+      
+      y.star = TimeSeries$lp
+      y.minus.1 = TimeSeries$lp.lag.1
+      y.minus.2 = TimeSeries$lp.lag.2
+      y.minus.3 = TimeSeries$lp.lag.3
+      #Step 3
+      W.1 = c()
+      W.2 = c()
+      W.3 = c()
+      for(i in 1:(length(TimeSeries$lp)+3)){
+        W.1 = c(W.1, y.minus.1[i])
+        W.2 = c(W.2, y.minus.1[i] + (y.minus.1[i] - y.minus.3[i])/2)
+        W.3 = c(W.3, 3*y.minus.1[i] - 3*y.minus.2[i] + y.minus.3[i])
+      }
+      #Removing last three values, since they are NA
+      W.1 = W.1[!is.na(W.1)]
+      W.2 = W.2[!is.na(W.2)]
+      W.3 = W.3[!is.na(W.3)]
+      #Step 4b
+      modelData = data.frame(y.star, W.1, W.2, W.3)
+      lm = lm(y.star~0+W.1+W.2+W.3, data = modelData)
+      beta2 = as.vector(lm$coefficients)[2]
+      beta3 = as.vector(lm$coefficients)[3]
+      #Constraining beta2 and beta3 as defined in Fig. 3
+      if(beta2 <0 & beta3 <0){
+        beta2 = 0
+        beta3 = 0
+      } else if(beta2< 0 & 0 < beta3& beta3 < 1){
+        beta2 = 0
+      } else if(0<beta2 &beta2 <1 & beta3 <0){
+        beta3 = 0
+      } else if(beta2 < (beta3-1) & beta3>1){
+        beta3 = 1
+        beta2 = 0
+      } else if(beta2 >1 & beta2>(beta3 +1)){
+        beta3 =0
+        beta2 = 1
+      } else if( beta2>0 & beta3>0 & beta2+beta3>1){
+        beta2 = beta2 -( .5*(beta2+beta3-1))
+        beta3 = beta3 - (.5*(beta2+beta3 -1))
+      }
+      beta1 = 1-beta2-beta3
+      #Step 5: Calculaing Residual and sigma.hat.squared
+      y.hat = beta1*W.1 + beta2*W.2 + beta3*W.3
+      resid = y.star-y.hat
+      autoCorrResid= durbinWatsonTest(resid)
+      sigma = sqrt(sum(resid^2)/(length(y.star)))
+      #Step 7: Calculate Indicator Variable 
+      # 
+      # logModelData = data.frame(y.minus.1, indicator)
+      # logm = logistf(indicator ~y.minus.1,data = logModelData)
+      # lambda0 = as.vector(logm$coefficients)[1]
+      # lambda1 = as.vector(logm$coefficients)[2]
+      # results = data.frame(Subject, DAQName, Condition, Event, Drive, Restart, beta1,beta2,beta3, lambda0,lambda1, sigma,  max = max(y.star), min = min(y.star), 
+      #                        sdlp = sd(y.star), mean.lp = mean(y.star))
+      
+      indicator = ifelse(resid <0, 1,0)
+      if(include.lv == TRUE){
+        logModelData = data.frame(y.minus.1, indicator, lv.minus.1 = TimeSeries$lv.minus.1)
+        logm = logistf(indicator ~y.minus.1+lv.minus.1, data = logModelData )
+        lambda0 = as.vector(logm$coefficients)[1]
+        lambda1 = as.vector(logm$coefficients)[2]
+        lambda2 = as.vector(logm$coefficients)[3]
+        results  = data.frame(Subject, DAQName, Condition, Event, Drive, Restart, beta1,beta2,beta3, lambda0,lambda1, sigma,  max = max(y.star), min = min(y.star), 
+            sdlp = sd(y.star), mean.lp = mean(y.star))
+      }else{
+        logModelData = data.frame(y.minus.1, indicator, TimeSeries$lv.minus.1)
+        logm = logistf(indicator ~y.minus.1,data = logModelData)
+        lambda0 = as.vector(logm$coefficients)[1]
+        lambda1 = as.vector(logm$coefficients)[2]
+        results = data.frame(Subject, DAQName, Condition, Event, Drive, Restart, beta1,beta2,beta3, lambda0,lambda1, sigma,  max = max(y.star), min = min(y.star), 
+                            sdlp = sd(y.star), mean.lp = mean(y.star))
+      }
+      final_df = rbind(final_df, results)
+      }
+  }
+  #names = c("DAQ", "Subject", "Timing", "Task", "Beta1", "Beta2", "Beta3", "Lambda0", "Lambda1", "Sigma", "autoCorr")
+  #final_df = as.data.frame(final_df)
+  #final_df = setnames(final_df, old = c("V1", "V2", "V3","V4","V5","V6","V7","V8","V9","V10", "V11"), new =  names)
+  final_df
+}
+
+```
+
+# Data Generation Functions 
+
+## Dawson Generation Model
+Time Series generator with normal errors. Uses the same function as decribed in O'Shea and Dawson.
+```{r}
+autoGeneratorPaper = function(reps, beta.1, beta.2, beta.3, lambda.0, lambda.1, sigma){
+  #Initializing first three positions using random walk
+  position = numeric(reps+100)
+  position[1] = 0
+  position[2] =  rnorm(1,0,sigma)
+  position[3] =  position[2]+rnorm(1,0,sigma)
+  p = c()
+  
+  for(i in 4:(reps+100)){
+    y.minus.1 = position[i-1]
+    y.minus.2 = position[i-2]
+    y.minus.3 = position[i-3]
+    W.1 = y.minus.1
+    W.2 = y.minus.1 + (y.minus.1 - y.minus.3)/2
+    W.3 = 3*y.minus.1 - 3*y.minus.2 + y.minus.3
+    u.t = runif(1)
+    p.t =  (1)/(1+exp(-(lambda.0+lambda.1*y.minus.1))) #(1+exp(-lambda.0-(lambda.1*y.minus.1)))^(1/2)
+    p = c(p,p.t)
+    I.t = ifelse(u.t<p.t, -1, 1)
+    e.t = abs(rnorm(1,0,sigma))
+    nextStep = beta.1*W.1 + beta.2*W.2+beta.3*W.3 + e.t*I.t
+    position[i] = nextStep
+  }
+  position[-1:-100]
+}
+```
+
+## LV Generation Model
+Time series generator that includes lateral velocity coefficent from logistic model. Not very good. 
+```{r}
+autoGeneratorLv = function(reps, beta.1, beta.2, beta.3, lambda.0, lambda.1, lambda.2, sigma){
+  #Initializing first three positions using random walk
+  position = numeric(reps+100)
+  position[1] = 0
+  position[2] =  rnorm(1,0,sigma)
+  position[3] =  position[2]+rnorm(1,0,sigma)
+  p = c()
+  lv = c()
+  for(i in 4:(reps+100)){
+    y.minus.1 = position[i-1]
+    y.minus.2 = position[i-2]
+    y.minus.3 = position[i-3]
+    W.1 = y.minus.1
+    W.2 = y.minus.1 + (y.minus.1 - y.minus.3)/2
+    W.3 = 3*y.minus.1 - 3*y.minus.2 + y.minus.3
+    u.t = runif(1)
+    lv.lag = (position[i-1]-position[i-2])*6
+    lv = c(lv, lv.lag)
+    p.t =  (1)/(1+exp(-(lambda.0+lambda.1*y.minus.1+lambda.2*lv.lag))) #(1+exp(-lambda.0-(lambda.1*y.minus.1)))^(1/2)
+    p = c(p,p.t)
+    I.t = ifelse(u.t<p.t, -1, 1)
+    e.t = abs(rnorm(1,0,sigma))
+    nextStep = beta.1*W.1 + beta.2*W.2+beta.3*W.3 + e.t*I.t
+    position[i] = nextStep
+  }
+  lv#position[-1:-100]
+}
+```
+
+## Residual Generator
+
+Residual Generator for a single drive from a data set. 
+```{r}
+singleDriveResiduals = function(DataSet, hz , name){
+  #Step 1: Obtain Driving TS
+  TimeSeries = DataSet %>% 
+    filter(Subject == name) 
+  
+  Subject = unique(TimeSeries$Subject)
+  DAQ = unique(TimeSeries$DAQ)
+  Timing = unique(TimeSeries$Timing)
+  Task = unique(TimeSeries$Task)
+  
+  
+  TimeSeries = TimeSeries %>% dplyr::select(DAQ, Subject, Task, Timing, Count, lp,lv)
+  
+  TimeSeries = hzAvg(TimeSeries, hz)
+  
+  #Step 2
+  TimeSeries = TimeSeries %>% dplyr::mutate(lp.lag.1 = lag(lp, n=1), lp.lag.2 = lag(lp, n=2), lp.lag.3 = lag(lp,n=3), lv.lag.1 = lag(lv,1))
+  
+  #Step 2a
+  TimeSeries = TimeSeries[-c(1,2,3),]
+  
+  y.star = TimeSeries$lp
+  y.minus.1 = TimeSeries$lp.lag.1
+  y.minus.2 = TimeSeries$lp.lag.2
+  y.minus.3 = TimeSeries$lp.lag.3
+  #Step 3
+  W.1 = c()
+  W.2 = c()
+  W.3 = c()
+  for(i in 1:(length(TimeSeries$lp)+3)){
+    W.1 = c(W.1, y.minus.1[i])
+    W.2 = c(W.2, y.minus.1[i] + (y.minus.1[i] - y.minus.3[i])/2)
+    W.3 = c(W.3, 3*y.minus.1[i] - 3*y.minus.2[i] + y.minus.3[i])
+  }
+  #Removing last three values, since they are NA
+  W.1 = W.1[!is.na(W.1)]
+  W.2 = W.2[!is.na(W.2)]
+  W.3 = W.3[!is.na(W.3)]
+  #Step 4b
+  modelData = data.frame(y.star, W.1, W.2, W.3)
+  lm = lm(y.star~0+W.1+W.2+W.3, data = modelData)
+  beta2 = as.vector(lm$coefficients)[2]
+  beta3 = as.vector(lm$coefficients)[3]
+  #Constraining beta2 and beta3 as defined in Fig. 3
+  if(beta2 <0 & beta3 <0){
+    beta2 = 0
+    beta3 = 0
+  } else if(beta2< 0 & 0 < beta3& beta3 < 1){
+    beta2 = 0
+  } else if(0<beta2 &beta2 <1 & beta3 <0){
+    beta3 = 0
+  } else if(beta2 < (beta3-1) & beta3>1){
+    beta3 = 1
+    beta2 = 0
+  } else if(beta2 >1 & beta2>(beta3 +1)){
+    beta3 =0
+    beta2 = 1
+  } else if( beta2>0 & beta3>0 & beta2+beta3>1){
+    beta2 = beta2 -( .5*(beta2+beta3-1))
+    beta3 = beta3 - (.5*(beta2+beta3 -1))
+  }
+  beta1 = 1-beta2-beta3
+  #Step 5: Calculaing Residual and sigma.hat.squared
+  y.hat = beta1*W.1 + beta2*W.2 + beta3*W.3
+  resid = y.star-y.hat
+  sigma = sqrt(sum(resid^2)/(length(y.star)))
+  #Step 7: Calculate Indicator Variable 
+  indicator = ifelse(resid <0, 1,0)
+  #Step 8: Estimating probability related to indicator Variable
+  logModelData = data.frame(y.minus.1, indicator)
+  logm = logistf(indicator ~y.minus.1, data = logModelData)
+  lambda0 = as.vector(logm$coefficients)[1]
+  lambda1 = as.vector(logm$coefficients)[2]
+  
+  
+  residuals = data.frame(index = 1:length(TimeSeries$lp), TimeSeries$lp, lm$residuals, TimeSeries$lv, indicator)
+  residuals = residuals %>% rename(lp=TimeSeries.lp, lv = TimeSeries.lv )
+  #cuts = cut(residuals$lp, breaks = c(-Inf, quantile(residuals$lp,.1), quantile(residuals$lp,.2), quantile(residuals$lp,.3),
+                                      #quantile(residuals$lp,.4), quantile(residuals$lp,.5), quantile(residuals$lp,.6),
+                                      #quantile(residuals$lp,.7), quantile(residuals$lp,.8), quantile(residuals$lp,.9), Inf))
+  #residuals = cbind(residuals, cuts)
+  residuals
+}
+
+```
+
+# Simulation Functions
+
+## Simulate Drive parameters with normal errors. 
+```{r}
+b.norm.para= function(n = 1000, reps, beta.1, beta.2, beta.3, lambda.0, lambda.1, sigma){
+  #Single Run Bootstrap for Normal Errors
+  boot.Param = data.frame(Beta1 = numeric(n), Beta2 =  numeric(n), Beta3 =  numeric(n), 
+                          Sigma =  numeric(n),Lambda0 =  numeric(n), 
+                          Lambda1 =  numeric( n))
+  for(i in 1:n){  
+    position1 = autoGeneratorPaper(reps,
+                                   beta.1 =  beta.1 ,beta.2 =  beta.2, beta.3 = beta.3, 
+                                   lambda.0 = lambda.0 , lambda.1 = lambda.1, sigma = sigma)
+    parameters = paraEstimator(data.frame(lp = position1), hz = 0)
+    boot.Param[i,] = parameters
+  }
+  boot.Param
+}
+```
+
+## Simulate Drive parameters with normal errors
+Was used to determine if there were any better distributions for the model that fit better than normal. 
+```{r}
+# Bootstrap Time Series parameters with t dist errors. 
+b.t.para= function(n = 1000, reps, beta.1, beta.2, beta.3, lambda.0, lambda.1, sigma, dof){
+  #Single Run Bootstrap for Normal Errors
+  boot.Param = data.frame(Beta1 = numeric(n), Beta2 =  numeric(n), Beta3 =  numeric(n), Sigma =  numeric(n),
+                          Lambda0 =  numeric(n), Lambda1 =  numeric( n))
+  for(i in 1:n){  
+    position1 = autoGeneratorT(reps = 1396,
+                                   beta.1 =  beta.1 ,beta.2 =  beta.2, beta.3 = beta.3, 
+                                   lambda.0 = lambda.0 , lambda.1 = lambda.1, sigma = sigma, dof = dof)
+    TimeSeries1 = data.frame(lp = position1)
+    parameters = as.data.frame(paraEstimator(TimeSeries1))
+    parameters = as.numeric(parameters$paraEstimates)
+    boot.Param[i,] = parameters
+  }
+  boot.Param
+}
+```
+
+## Simulated Drive with Bootstrapped Residuals
+Residuals came from a true drive, not assumed to be from a specific distribution
+
+```{r}
+autoGenBootResid = function(beta.1, beta.2, beta.3, lambda.0, lambda.1, sigma, residuals){
+  reps = length(residuals)
+  
+  position = numeric(reps+100)
+  position[1] = 0
+  position[2] = sample(residuals, 1, TRUE)
+  position[3] =  position[2]+sample(residuals, 1, TRUE)
+  
+  for(i in 4:(reps+100)){
+    y.minus.1 = position[i-1]
+    y.minus.2 = position[i-2]
+    y.minus.3 = position[i-3]
+    W.1 = y.minus.1
+    W.2 = y.minus.1 + (y.minus.1 - y.minus.3)/2
+    W.3 = 3*y.minus.1 - 3*y.minus.2 + y.minus.3
+    u.t = runif(1)
+    p.t =  (1)/(1+exp(-(lambda.0+lambda.1*y.minus.1))) 
+    I.t = ifelse(u.t<p.t, -1, 1)
+    e.t = abs(sample(residuals, 1, TRUE))
+    nextStep = beta.1*W.1 + beta.2*W.2+beta.3*W.3 + e.t*I.t
+    position[i] = nextStep
+  }
+  ts = position[-1:-100]
+  ts
+}
+
+```
+
+
+
+# Simulation Study Funtions
+
+## Nearest Neighbor Algorithm
+```{r}
+euclidean_distance <- function(vec1, vec2) {
+  sum((as.numeric(vec1) - as.numeric(vec2))^2)^(1/2)
+}
+
+# Function to find the closest set of parameters in the main dataset to the given vector
+find_closest_parameters <- function(df, targetVec) {
+  closest_index <- 1
+  closest_distance <- euclidean_distance(targetVec, (df[1,2:7]))
+  
+  for (i in 2:nrow(df)) {
+   
+    current_distance <- euclidean_distance(as.numeric(targetVec), df[i,2:7 ])
+    if(is.na(current_distance)==TRUE){next}
+    if (current_distance < closest_distance) {
+      closest_index <- i
+      closest_distance <- current_distance
+    }
+  }
+  
+  return(df[closest_index,1 ])
+}
+```
+
+## Parameter simulation with Bootstraped Residuals
+```{r}
+paraSimR = function(Driver,Beta1, Beta2, Beta3, Lambda0, Lambda1, Sigma, estimates,  hz, obs, include.lv = FALSE){
+  
+  targetVec = c(Beta1,Beta2,Beta3,Lambda0,Lambda1, Sigma)
+  df = data.frame(estimates) %>% dplyr::select(Subject, beta1, beta2, beta3, lambda0, lambda1, sigma)#"Subject","beta1","beta2", "beta3","lambda0", "lambda1", "sigma")
+  df = df %>% filter(sigma <= .005+Sigma&sigma>=.005-Sigma)
+  TrueDrive = find_closest_parameters(df,targetVec)
+  resid = singleDriveResiduals(SteerLong, 6, name = TrueDrive)$lm.residuals
+  ParamP = data.frame(beta1 = numeric(obs), beta2 =  numeric(obs), beta3 =  numeric(obs), 
+                      lambda0 =  numeric(obs), lambda1 =  numeric( obs),sigma =  numeric(obs))
+  ParamLV = data.frame(beta1 = numeric(obs), beta2 =  numeric(obs), beta3 =  numeric(obs), 
+                       lambda0 =  numeric(obs), lambda1 =  numeric( obs),
+                       sigma =  numeric(obs))
+  Drives = c()
+  ts = autoGeneratorPaper(696, Beta1, Beta2, Beta3, Lambda0, Lambda1, Sigma)
+  confIntP = paraEstimator(data.frame(lp = ts), hz = 0, frames = hz, include.lv = FALSE,include.ConfInt = TRUE)[7:16]
+  confIntP = matrix(confIntP, nrow =2)
+  confIntLV = paraEstimator(data.frame(lp = ts), hz = 0, frames = hz, include.lv = TRUE,include.ConfInt = TRUE)[7:16]
+  confIntLV = matrix(confIntLV, nrow =2)
+  for(j in 1: obs){
+    ts = autoGenBootResid( Beta1, Beta2, Beta3, Lambda0, Lambda1, Sigma,resid)
+    parametersP = paraEstimator(data.frame(lp = ts), hz = 0, frames = hz, include.lv = FALSE)
+    parametersLV = paraEstimator(data.frame(lp = ts), hz = 0, frames = hz, include.lv = TRUE)
+    ParamP[j,] = parametersP
+    ParamLV[j, ] = parametersLV
+    Drives = cbind(ts,Drives)
+  }
+  true = c(Beta1, Beta2, Beta3, Lambda0, Lambda1, Sigma)
+  meanP = colMeans(ParamP)
+  meanLV = colMeans(ParamLV)
+  biasP = meanP -true
+  biasLV = meanLV - true
+  varianceP = colVars(ParamP)
+  varianceLV = colVars(ParamLV)
+  mseP = varianceP + biasP^2
+  mseLV = varianceLV + biasLV^2
+  mean.bias.percentP =(( meanP-true)/true)*100
+  mean.bias.percentLV =(( meanLV-true)/true)*100
+  CovRateP = c(coverageRate(confIntP, ParamP),NA)
+  CovRateLV = c(coverageRate(confIntLV, ParamLV),NA)
+  
+  results = data.frame(type = "Paper", hz = as.character(hz),true, mean = meanP, variance = varianceP, bias = biasP, mse = mseP, 
+                       mean.percent.bias = mean.bias.percentP, coverage.Percent=CovRateP)
+  temp = data.frame(type = "LV",  hz = as.character(hz),true, mean = meanLV, variance = varianceLV, bias = biasLV, mse = mseLV, 
+                    mean.percent.bias = mean.bias.percentLV, coverage.Percent =  CovRateLV)
+  results = results %>% tibble::rownames_to_column()
+  results = results %>% rename(Parameter = rowname )
+  temp = temp %>% tibble::rownames_to_column()
+  temp = temp %>% rename(Parameter = rowname )
+  results = rbind(results, temp)
+  Drives = as.data.frame(Drives)
+  #file = paste("C:\\Users\\krysanma\\OneDrive - Grinnell College\\MAP_SUM23\\M&M\\Programs\\Analysis\\Autoregressive Model\\Simulation Drives\\Bootstrapped Residuals\\", Driver, ".csv", sep = "")
+  #write.csv(Drives,file = file)
+  results
+}
+```
+
+## Parameter Simulation with Normal Residuals
+```{r}
+paraSim = function(Driver, Beta1, Beta2, Beta3, Lambda0, Lambda1, Sigma,  hz, obs){
+    Lambda2 =0
+    ParamP = data.frame(beta1 = numeric(obs), beta2 =  numeric(obs), beta3 =  numeric(obs), 
+                            lambda0 =  numeric(obs), lambda1 =  numeric( obs),sigma =  numeric(obs))
+    ParamLV = data.frame(beta1 = numeric(obs), beta2 =  numeric(obs), beta3 =  numeric(obs), 
+                        lambda0 =  numeric(obs), lambda1 =  numeric( obs),sigma =  numeric(obs))
+    Drives = c()
+    ts = autoGeneratorPaper(696, Beta1, Beta2, Beta3, Lambda0, Lambda1, Sigma)
+    confIntP = paraEstimator(data.frame(lp = ts), hz = 0, frames = hz, include.lv = FALSE,include.ConfInt = TRUE)[7:16]
+    confIntP = matrix(confIntP, nrow =2)
+    confIntLV = paraEstimator(data.frame(lp = ts), hz = 0, frames = hz, include.lv = TRUE,include.ConfInt = TRUE)[7:16]
+    confIntLV = matrix(confIntLV, nrow =2)
+    for(j in 1: obs){
+      ts = autoGeneratorPaper(696, Beta1, Beta2, Beta3, Lambda0, Lambda1, Sigma)
+      parametersP = paraEstimator(data.frame(lp = ts), hz = 0, frames = hz, include.lv = FALSE)
+      parametersLV = paraEstimator(data.frame(lp = ts), hz = 0, frames = hz, include.lv = TRUE)
+      ParamP[j,] = parametersP
+      ParamLV[j, ] = parametersLV
+      Drives = cbind(ts,Drives)
+    }
+    true = c(Beta1, Beta2, Beta3, Lambda0, Lambda1, Sigma)
+    meanP = colMeans(ParamP)
+    meanLV = colMeans(ParamLV)
+    biasP = meanP -true
+    biasLV = meanLV - true
+    varianceP = colVars(ParamP)
+    varianceLV = colVars(ParamLV)
+    mseP = varianceP + biasP^2
+    mseLV = varianceLV + biasLV^2
+    mean.bias.percentP =(( meanP-true)/true)*100
+    mean.bias.percentLV =(( meanLV-true)/true)*100
+    CovRateP = c(coverageRate(confIntP, ParamP),NA)
+    CovRateLV = c(coverageRate(confIntLV, ParamLV),NA)
+    
+    results = data.frame(type = "Paper", hz = as.character(hz),true, mean = meanP, variance = varianceP, bias = biasP, mse = mseP, 
+                         mean.percent.bias = mean.bias.percentP, coverage.Percent=CovRateP)
+    temp = data.frame(type = "LV",  hz = as.character(hz),true, mean = meanLV, variance = varianceLV, bias = biasLV, mse = mseLV, 
+                        mean.percent.bias = mean.bias.percentLV, coverage.Percent =  CovRateLV)
+    results = results %>% tibble::rownames_to_column()
+    results = results %>% rename(Parameter = rowname )
+    temp = temp %>% tibble::rownames_to_column()
+    temp = temp %>% rename(Parameter = rowname )
+    results = rbind(results, temp)
+    Drives = as.data.frame(Drives)
+    #file = paste("C:\\Users\\krysanma\\OneDrive - Grinnell College\\MAP_SUM23\\M&M\\Programs\\Analysis\\Autoregressive Model\\Simulation Drives\\", Driver, ".csv", sep = "")
+    #write.csv(Drives,file = file)
+  results
+}
+```
+
+## Full Simulation Function for Normal Errors
+```{r}
+fullSimulator = function(parameters, drivers, drives,hz){
+  
+  results = c()
+  pb = txtProgressBar(min = 0, max = (drivers), initial = 0) 
+  for(i in 1:drivers){
+    Driver = paste("Driver", i, sep = "_")
+    Beta1 = parameters[i,1]
+    Beta2 = parameters[i,2]
+    Beta3 = parameters[i,3]
+    Lambda0 = parameters[i,4]
+    Lambda1 = parameters[i,5]
+    Sigma = parameters[i,6]
+    temp= cbind(driver = i,paraSim(Driver, Beta1, Beta2, Beta3, Lambda0, Lambda1, Sigma,  hz, drives))
+    results = rbind(results, temp)
+    setTxtProgressBar(pb,i)
+  }
+  drivers = 1:drivers
+  parameters = cbind(Driver = paste("Driver", drivers, sep = "_"), parameters)
+  parameters = as.data.frame(parameters)
+  # write.csv(parameters, file = "C:\\Users\\krysanma\\OneDrive - Grinnell College\\MAP_SUM23\\M&M\\Programs\\Analysis\\Autoregressive Model\\Simulation Drives\\Parameters.csv")
+  results
+  
+}
+```
+
+
+## Full Simulator with Bootstrapped Resiudals
+
+```{r}
+fullSimulatorR = function(parameters, estimates, drivers, drives,hz){
+  
+  results = c()
+  pb = txtProgressBar(min = 0, max = (drivers), initial = 0) 
+  for(i in 1:drivers){
+    Driver = paste("Driver", i, sep = "_")
+    Beta1 = parameters[i,1]
+    Beta2 = parameters[i,2]
+    Beta3 = parameters[i,3]
+    Lambda0 = parameters[i,4]
+    Lambda1 = parameters[i,5]
+    Sigma = parameters[i,6]
+    temp= cbind(driver = i,paraSimR(Driver, Beta1, Beta2, Beta3, Lambda0, Lambda1, Sigma, estimates,  hz, drives))
+    results = rbind(results, temp)
+    # write.csv(results, file = "C:\\Users\\krysanma\\OneDrive - Grinnell College\\MAP_SUM23\\M&M\\Programs\\Analysis\\Autoregressive Model\\Simulation Drives\\BootstrapSimResults.csv")
+    setTxtProgressBar(pb,i)
+  }
+  drivers = 1:drivers
+  parameters = cbind(Driver = paste("Driver", drivers, sep = "_"), parameters)
+  parameters = as.data.frame(parameters)
+  # write.csv(parameters, file = "C:\\Users\\krysanma\\OneDrive - Grinnell College\\MAP_SUM23\\M&M\\Programs\\Analysis\\Autoregressive Model\\Simulation Drives\\Parameters.csv")
+  results
+  
+}
+
+```
+
+# Logistic Simulator For Bias 
+
+## Simulation of Logisitc Model with Varying Correltion
+Simulates a dataset similar to the sign of residual. Obs is number of elements in Dataset,
+lambda0 and lambda1 are the intercept and slope for the calculation for indicator variable.
+Cor.prob is the probability that the next indicator value takes the value from the privous element in the vector. Lane Position is just a sine wave with a max/min hight of 3,-3 (Trying to be similar to True Data.)
+
+```{r}
+indicatorValue = function(obs, lambda0, lambda1, cor.prob){
+  x = seq(0,10,length.out = obs)
+  lp = 3*sin(x)
+  lv = (lp[-1]-lag(lp,1)[-1])*60
+  indicator = numeric(obs)
+  indicator[1] = sample(c(0,1),1)
+  if(cor.prob != 0){
+    for(i in 2:obs){
+      sameValue = sample(x = c(0,1), size = 1, prob = c(1-cor.prob,cor.prob))
+      if(sameValue == 0){
+        prob  = (1+exp(-lambda0 - lambda1*lp[i-1]))^(-1)
+        u = runif(1)
+        indicator[i] = ifelse(prob>u, 1,0)[1]
+      }else{
+        indicator[i]=indicator[i-1]
+      }
+    }
+    results = data.frame(index = c(1:(obs-1)),indicator = indicator[-1],lp =  lp[-1],lv)
+    
+  }else{
+    for(i in 2:obs){
+      prob  = (1+exp(-lambda0 - lambda1*lp[i]))^(-1)
+      u = runif(1)
+      indicator[i] = ifelse(prob>u, 1,0)[1]
+    }
+    results = data.frame(index = c(1:(obs-1)),indicator = indicator[-1], lp = lp[-1],lv)
+  }
+  results
+}
+
+```
+
+## Bootstraped Simulation of Logisitc Simulation
+This function repeats indicatorValue (reps) times for a sinlge combination of lambda0,lambda1, and cor.prob,and calculates the mean, variance, bias, mean percent bias of the coefficient estimates of logistic regression for the indicator based on lane position. Also reports the mean and variance of the standard error.
+```{r}
+bootstrapInd = function(reps, obs, lambda0, lambda1, cor.prob, model.type = c("GLM", "Firth", "Sandwich")){
+  coefValues = data.frame(True0 = numeric(reps), True1 = numeric(reps), lambda0 = numeric(reps), lambda0_SE = numeric(reps),
+                          lambda1 = numeric(reps), lambda1_SE = numeric(reps),cor.prob = numeric(reps))
+  for(i in 1:reps){
+    temp = indicatorValue(obs, lambda0, lambda1, cor.prob)
+    if(model.type == "GLM"){
+      tempModel = summary(glm(formula = indicator~lp+lv, family = "binomial", data= temp))
+      coefValues[i,] = c(lambda0[1], lambda1[1], tempModel$coefficients[1,1], tempModel$coefficients[1,2],
+                           tempModel$coefficients[2,1], tempModel$coefficients[2,2], cor.prob[1])
+    }else if(model.type =="Firth"){
+      tempModel = summary(logistf(indicator~lp+lv, data = temp))
+      coefValues[i,] = c(lambda0[1], lambda1[1], unname(tempModel$coefficients[1]),unname(sqrt(diag(vcov(tempModel)))[1]),
+                         unname(tempModel$coefficients[2]),unname(sqrt(diag(vcov(tempModel)))[1]), cor.prob[1])
+    }
+  }
+  true = c(lambda0, lambda1)
+  mean = colMeans(coefValues)[c(3,5)]
+  se_mean = colMeans(coefValues)[c(4,6)]
+  var = colVars(coefValues)[c(3,5)]
+  se_var = colVars(coefValues)[c(4,6)]
+  bias = mean - true
+  mean.percent.bias =(( mean-true)/true)*100
+  results = data.frame(true, cor.prob, mean, var, bias, mean.percent.bias, se_mean,se_var) 
+  results
+}
+```
+
+## Full Simulation Function with Varying Inputs
+```{r}
+indicatorSim = function(reps, obs, lambda0, lambda1, cor.prob){
+  runs = length(lambda0)*length(lambda1)*length(cor.prob)
+  coefValues = NULL
+  pb = txtProgressBar(min = 0, max = length(lambda0), initial = 0) 
+  for(i in 1:length(lambda0)){
+    for(j in 1:length(lambda1)){
+      for(k in 1:length(cor.prob)){
+        temp = bootstrapInd(reps, obs, lambda0[i], lambda1[j], cor.prob[k],model.type = "GLM")
+        temp = temp %>% tibble::rownames_to_column()
+        temp = temp %>% rename(Parameter = rowname )
+        coefValues = rbind(coefValues,temp)
+      }
+    }
+    setTxtProgressBar(pb,i)
+  }
+  
+  coefValues
+}
+```
+
+
