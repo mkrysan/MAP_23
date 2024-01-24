@@ -1,0 +1,160 @@
+---
+title: "Analysis of OSD Model"
+output: html_document
+date: "2023-12-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Cleaning Script for CU Data
+We are unable to produce raw files, but the cleaning script we used is shown below. 
+**THIS CODE WILL NOT RUN**
+```{r, eval=FALSE}
+library(tidyverse)
+library(R.matlab)
+library(stringr)
+library(readxl)
+
+# Read In Daq Data 
+disp 
+
+#File Header 
+ht 
+
+## Only keep reduced
+disp_red = subset(disp, Reduced == "X")
+
+## Extract file names 
+file_list = str_replace_all(disp_red$DaqName, ".daq", "")
+
+
+
+## Extract info using RegEx
+conds = str_extract(string = disp_red$DaqPath,  pattern = "(.*)\\\\")
+subjs = str_extract(string = disp_red$DaqPath,  pattern = "\\\\(.+)")
+
+
+
+## Setup storage object
+outfile = data.frame(Subject = substr(subjs, 2, 6),
+                     Condition = str_replace_all(conds,"\\\\", ""),
+                     Timing = str_replace_all(str_sub(subjs,-4,-1), "_", ""),
+                     Scenario = "Avoid",
+                     Sequence = as.numeric(substr(file_list, 1, 1)))
+
+
+outfile$Scenario[which(is.na(str_match(disp_red$DaqName, "Avoid")))] = "LeftIncursion"
+
+
+## Only looking at LeftIncursion, since avoid does not have a task
+liid = which(outfile$Scenario == "LeftIncursion")
+outfile = outfile[liid, ]
+file_list = file_list[liid]
+
+final_df = NULL
+
+pb = txtProgressBar(min = 0, max = length(file_list), initial = 0)
+
+## Loop through time series data and extract important information
+for(i in 1:length(file_list)){
+  # print(i)
+  
+  # Loading dataset from mat file
+  tdata = readMat.default(paste0(ht, file_list[i], ".mat"))
+
+  #Names of Lists in .mat file 
+  dimnames(tdata$elemDataI)
+  var_ids = cbind(1:length(dimnames(tdata$elemDataI)[[1]]), dimnames(tdata$elemDataI)[[1]])
+  
+  # ID's for Ease of Use
+  brk_pdl_force_id = as.numeric(var_ids[var_ids[,2]== "CFS.Brake.Pedal.Force",1])
+  acl_pdl_pos_id = as.numeric(var_ids[var_ids[,2] == "CFS.Accelerator.Pedal.Position", 1])
+  spd_id = as.numeric(var_ids[var_ids[,2] == "VDS.Veh.Speed", 1])
+  ldev_id = as.numeric(var_ids[var_ids[,2] == "SCC.Lane.Deviation",1])
+  audio_id = as.numeric(var_ids[var_ids[,2] == "SCC.Audio.Trigger", 1])
+  
+  #Frames of interest for first task
+  audio_frame_1 = min(which(tdata[["elemDataI"]][audio_id][[1]] <= 414 & tdata[["elemDataI"]][audio_id][[1]] >= 400))
+  start_1 = audio_frame_1-120 #Start 120 frames (1 second) after the first audio queue for task
+  end_1 = audio_frame_1+600 #End 600 frames (5 seconds) after first audio queue
+  frames_1 = start_1:end_1
+  
+  #Values of Speed, Brake Force, accelerator position, audio value, and lane poistion for frames of interest
+  temp_spd_1 = tdata[["elemDataI"]][spd_id][[1]][frames_1]
+  temp_brk_pdl_force_1 = tdata[["elemDataI"]][brk_pdl_force_id][[1]][frames_1]
+  temp_acl_pdl_pos_1 = tdata[["elemDataI"]][acl_pdl_pos_id][[1]][frames_1]
+  temp_ldev_1 = tdata[["elemDataI"]][ldev_id][[1]][frames_1,2]
+  temp_lvel_1 = (tdata[["elemDataI"]][ldev_id][[1]][frames_1,2] - tdata[["elemDataI"]][ldev_id][[1]][frames_1 - 1,2])*60
+  temp_audio_value_1 = tdata[["elemDataI"]][audio_id][[1]][frames_1]
+
+  temp_df_1 =  data.frame(DAQ = file_list[i],
+                        Subject = outfile[i,1],
+                        Condition = outfile[i,2],
+                        Timing = outfile[i,3],
+                        Scenario = outfile[i,4],
+                        Sequence = outfile[i,5],
+                        Task = 1,
+                        spd = temp_spd_1, 
+                        brk = temp_brk_pdl_force_1,
+                        acl = temp_acl_pdl_pos_1, 
+                        lp = temp_ldev_1,
+                        lv = temp_lvel_1, 
+                        Audio = temp_audio_value_1, 
+                        count = 1:length(temp_spd_1))
+  
+  #Removing the frame we have already extracted
+  tdata[['elemDataI']][audio_id][[1]][frames_1] = 0
+  
+  #Making sure there is a second task
+  
+  #Repeating above process for second task
+  audio_frame_2 = min(which(tdata[["elemDataI"]][audio_id][[1]] <= 414 & tdata[["elemDataI"]][audio_id][[1]] >= 400))
+  start_2 = audio_frame_2 - 120 #Start 60 frames (1 second) after the first audio queue for task
+  end_2 = audio_frame_2 + 600 #End 300 frames (5 seconds) after first audio queue
+  frames_2 = start_2:end_2
+  
+  #Values of Speed, Brake Force, accelerator position, audio value, and lane position for frames of interest
+  temp_spd_2 = tdata[["elemDataI"]][spd_id][[1]][frames_2]
+  temp_brk_pdl_force_2 = tdata[["elemDataI"]][brk_pdl_force_id][[1]][frames_2]
+  temp_acl_pdl_pos_2 = tdata[["elemDataI"]][acl_pdl_pos_id][[1]][frames_2]
+  temp_ldev_2 = tdata[["elemDataI"]][ldev_id][[1]][frames_2,2]
+  temp_lvel_2 = (tdata[["elemDataI"]][ldev_id][[1]][frames_2,2] - tdata[["elemDataI"]][ldev_id][[1]][frames_2 - 1,2])/60
+  temp_audio_value_2 = tdata[["elemDataI"]][audio_id][[1]][frames_2]
+  
+  
+  temp_df_2 =  data.frame(DAQ = file_list[i],
+                          Subject = outfile[i,1],
+                          Condition = outfile[i,2],
+                          Timing = outfile[i,3],
+                          Scenario = outfile[i,4],
+                          Sequence = outfile[i,5],
+                          Task = 2,
+                          spd = temp_spd_2, 
+                          brk = temp_brk_pdl_force_2,
+                          acl = temp_acl_pdl_pos_2, 
+                          lp = temp_ldev_2,
+                          lv = temp_lvel_2, 
+                          Audio = temp_audio_value_2, count = 1:length(temp_spd_2))
+ 
+  final_df = rbind(final_df, temp_df_1, temp_df_2)
+  
+  setTxtProgressBar(pb,i)
+}
+
+# Finally, we create variables that represent the constituent parts of the DAQ
+separated_DAQ <- str_split_fixed(final_df$DAQ, "_", n = 3)
+final_df <- mutate(.data = final_df, 
+                   DAQ_Number = parse_integer(separated_DAQ[,1]),
+                   DAQ_Id = paste(" ", separated_DAQ[,3], sep = "")) 
+#this done as a string, since it is too long to be converted to an integer
+
+
+
+# Reordering so it makes somewhat more sense
+final_df <- rename(.data = final_df, Count = count)
+final_df <- final_df[, c("DAQ", "DAQ_Number", "Scenario", "DAQ_Id", "Subject", "Condition", "Task", "Sequence", "Timing", "Audio", "Count", "spd", "acl", "brk", "lp", "lv")]
+```
+
